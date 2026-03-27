@@ -1,0 +1,155 @@
+Build a research tool for a marketing and AI automation agency.
+The tool will help me research businesses before outreach so I can record personalized Loom videos showing I understand their marketing, ads, funnels, and automation opportunities.
+The goal is to generate a detailed but concise report about a business and automatically produce a Loom outreach script.
+Input
+The tool should accept one of the following:
+• business website URL
+• business name + location
+Example inputs:
+roofingcompany.com Joe’s Roofing Dallas
+If only the name is given, the tool should find the correct website automatically.
+Core Features
+1. Business Information Scraper
+Collect basic business details:
+company name
+website
+location
+services offered
+estimated pricing if visible
+phone number
+email
+contact forms
+booking systems
+Google Maps listing if available
+1. Social Media Discovery
+Find all social profiles linked to the business.
+Platforms:
+• Facebook
+• Instagram
+• TikTok
+• YouTube
+• LinkedIn
+• X / Twitter
+For each platform gather:
+• profile link
+• follower count
+• posting frequency
+• last post date
+• engagement signals if visible
+1. Website Technology Detection
+Detect the marketing stack used on the website.
+Examples:
+Meta Pixel
+Google Tag Manager
+Google Analytics
+HubSpot
+GoHighLevel
+Mailchimp
+Klaviyo
+Shopify
+WordPress
+Webflow
+booking tools
+chat widgets
+1. Advertising Intelligence
+Find ads the business is running.
+Sources:
+Meta Ad Library TikTok Ads Library Google Ads Transparency Center
+Collect:
+• number of active ads
+• ad creatives if accessible
+• messaging themes
+• landing pages connected to ads
+• ad duration if visible
+Note: exact ad spend and CTR are not publicly available, so estimate activity based on ad volume and ad longevity.
+1. Funnel Detection
+Analyze the website to find:
+• landing pages
+• lead magnets
+• booking funnels
+• free consultation offers
+• checkout pages
+• upsells
+• email capture forms
+• chatbot widgets
+Also detect if there is:
+• retargeting setup
+• abandoned lead followups
+• automated booking
+1. Traffic and SEO Signals (Free Sources)
+Estimate traffic signals using free or cheap methods.
+Include:
+• SEO keywords
+• blog posts
+• content frequency
+• estimated organic presence
+• Google indexed pages
+• paid search keywords if available
+Avoid expensive APIs.
+1. Opportunity Analysis (Very Important)
+The tool should automatically generate a section called:
+Marketing Opportunities
+Identify things like:
+• missing retargeting
+• poor funnel structure
+• weak call to action
+• no SMS follow ups
+• outdated website
+• inconsistent posting
+• lack of automation
+Then highlight where AI automation could help.
+Examples:
+• AI call answering
+• automated SMS follow up
+• lead nurturing
+• CRM automation
+• appointment reminders
+• review automation
+1. Loom Outreach Script Generator
+After analyzing the business, automatically generate a personalized Loom script.
+The script should be structured like this.
+Opening
+Short introduction and why you recorded the video.
+Observation
+Mention specific things about their business that show you actually researched them.
+Example:
+"I noticed you're running several Meta ads for roofing inspections but the traffic seems to land directly on your homepage instead of a dedicated booking funnel."
+Insights
+Explain a few missed opportunities.
+Examples:
+• missing automation
+• funnel inefficiencies
+• no retargeting
+• slow lead response
+Solution Tease
+Briefly explain how AI automation could help them generate more leads and close more deals.
+Call to Action
+Invite them to a short call.
+Keep the Loom script short and natural so it can be recorded in about 60 to 90 seconds.
+1. Cost Constraints
+The tool should prioritize free or very cheap services.
+Monthly cost target:
+0to
+0to20 maximum.
+Prefer these technologies:
+• Puppeteer or Playwright for scraping
+• Apify free tier if needed
+• builtwith free tier
+• Google search scraping
+• Meta Ad Library scraping
+• TikTok Ads Library scraping
+Avoid expensive SaaS APIs.
+Technical Requirements
+• build using Node.js or Python
+• modular scraper architecture
+• safe rate limiting
+• CLI interface
+• export results as JSON and Markdown
+• include a clean readable report
+Report Structure
+Business Overview Social Media Marketing Stack Ads Intelligence Funnels Traffic Signals Marketing Opportunities Loom Outreach Script
+
+Additional Info:
+1. For the frontend we can go with Next.js and we can use the supabase database + authentication through the MCP server.
+2. Our product also wants to queue the metrics of the ad from the company. Whenever our product finds the ad of the particular company, it also wants to provide us the metrics so do the proper web search for implementing the metrics feature in our product.
+3. We can use Open Router for the API key.

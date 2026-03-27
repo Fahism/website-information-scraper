@@ -1,0 +1,3 @@
+-- Migrate loom_script from TEXT to TEXT (still text, but now stores JSON string)
+-- No schema change needed — we store JSON.stringify() output in the existing TEXT column
+-- and parse it back on read. This maintains backward compatibility with old plain-text entries.

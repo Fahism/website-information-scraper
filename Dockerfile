@@ -17,7 +17,7 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 ENV PLAYWRIGHT_BROWSERS_PATH=/app/.playwright-browsers
-RUN npx playwright install chromium --with-deps
+RUN npx playwright-core install chromium chromium-headless-shell --with-deps
 
 COPY . .
 RUN npm run build

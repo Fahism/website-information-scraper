@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceRoleClient } from '@/lib/supabase-server';
-import { runOrchestrator } from '@/scrapers';
-import { buildReport } from '@/report/builder';
 
 // Tracking parameters added by ad platforms — strip these so the scraper
 // always hits the clean canonical URL, not a session-specific ad redirect.
@@ -42,6 +40,11 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 export async function POST(request: NextRequest) {
+  const [{ runOrchestrator }, { buildReport }] = await Promise.all([
+    import('@/scrapers'),
+    import('@/report/builder'),
+  ]);
+
   const supabase = createServiceRoleClient();
 
   const userId = process.env.ADMIN_USER_ID;

@@ -38,6 +38,8 @@ function cleanUrl(raw: string): string | null {
 }
 
 export const maxDuration = 300; // 5 minutes for Vercel Fluid Compute
+export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
 
 export async function POST(request: NextRequest) {
   const supabase = createServiceRoleClient();

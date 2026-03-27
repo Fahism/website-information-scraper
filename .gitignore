@@ -27,6 +27,7 @@ yarn-error.log*
 .env
 cred for deployment.txt
 rendercred.txt
+cron.txt
 loom prompt work context.txt
 ss/
 

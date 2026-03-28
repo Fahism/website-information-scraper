@@ -41,6 +41,13 @@
     "tailwind-merge": "^2.4.0",
     "ts-node": "^10.9.2"
   },
+  "overrides": {
+    "cookie": "^0.7.2",
+    "brace-expansion": "^2.0.3",
+    "flatted": "^3.4.2",
+    "minimatch": "^9.0.6",
+    "glob": "^10.4.6"
+  },
   "devDependencies": {
     "@types/node": "^20",
     "@types/react": "^18",

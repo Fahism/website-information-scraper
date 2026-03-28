@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { getPage } from '@/lib/browser-pool';
 import { rateLimitedRequest } from '@/lib/rate-limiter';
+import { getNextAvailableKey, markKeyExhausted } from '@/lib/searchapi-key-manager';
 import type { AdCreative, ScraperOptions } from '@/scrapers/types';
 
 interface RawMetaAd {
@@ -30,9 +31,90 @@ function unixToDateStr(ts: number | null | undefined): string | null {
   }
 }
 
-// ─── Primary: Apify Facebook Ads Scraper ─────────────────────────────────────
-// Works from any IP including Render's datacenter — Apify uses residential proxies.
-// Uses the user's existing APIFY_API_TOKEN (free $5/month covers ~33 research jobs).
+// ─── Primary: SearchAPI Meta Ad Library ───────────────────────────────────────
+// Works from any IP including Render's datacenter — SearchAPI handles proxies.
+// Uses the existing SEARCHAPI_API_KEY_1/2 keys (same keys used for Google search).
+// No per-result pricing — flat credit cost per API call (~1 credit per search).
+
+async function scrapeMetaAdsViaSearchApi(
+  businessName: string,
+  country: string
+): Promise<AdCreative[]> {
+  const apiKey = getNextAvailableKey();
+  if (!apiKey) return [];
+
+  try {
+    const resp = await axios.get('https://www.searchapi.io/api/v1/search', {
+      params: {
+        engine: 'meta_ad_library',
+        q: businessName,
+        country,
+        api_key: apiKey,
+      },
+      timeout: 20000,
+    });
+
+    const ads: unknown[] = resp.data?.ads ?? [];
+    if (!Array.isArray(ads) || ads.length === 0) return [];
+
+    return ads
+      .map((item: unknown): AdCreative | null => {
+        const ad = item as Record<string, unknown>;
+        const snapshot = ad.snapshot as Record<string, unknown> | undefined;
+        const body = snapshot?.body as Record<string, unknown> | undefined;
+        const images = snapshot?.images as Array<Record<string, unknown>> | undefined;
+        const videos = snapshot?.videos as Array<Record<string, unknown>> | undefined;
+
+        const rawId = String(ad.ad_archive_id ?? '');
+        if (!rawId) return null;
+
+        const adText = (body?.text as string | null)?.slice(0, 500) ?? null;
+        const imageUrl =
+          (images?.[0]?.original_image_url as string | null) ??
+          (videos?.[0]?.video_preview_image_url as string | null) ??
+          null;
+        const isActive = Boolean(ad.is_active);
+        const startDate = parseDateStr(ad.start_date as string | null);
+        const endDate = parseDateStr(ad.end_date as string | null);
+        const platforms = (ad.publisher_platform as string[] | null)?.map(p => p.toLowerCase()) ?? ['facebook'];
+        const ctaText = (snapshot?.cta_text as string | null) ?? null;
+        const landingUrl = (snapshot?.link_url as string | null)
+          ?? `https://www.facebook.com/ads/library/?id=${rawId}`;
+        const displayFormat = (snapshot?.display_format as string | null) ?? null;
+        const format = displayFormat === 'VIDEO' ? 'video' : imageUrl ? 'image' : 'text';
+
+        return {
+          adId: `meta_${rawId}`,
+          platform: 'meta',
+          adText,
+          imageUrl,
+          ctaText,
+          landingUrl,
+          startDate,
+          endDate,
+          isActive,
+          format,
+          impressionsRange: null,
+          spendRange: null,
+          reachRange: null,
+          platforms,
+          ageGenderDistribution: null,
+          regionDistribution: null,
+        };
+      })
+      .filter((ad): ad is AdCreative => ad !== null);
+  } catch (err) {
+    if (axios.isAxiosError(err)) {
+      const status = err.response?.status;
+      if (status === 429 || status === 402) markKeyExhausted(apiKey);
+    }
+    return [];
+  }
+}
+
+// ─── Secondary: Apify Facebook Ads Scraper ────────────────────────────────────
+// Fallback if SearchAPI keys are exhausted. Requires APIFY_API_TOKEN.
+// NOTE: apify~facebook-ads-scraper charges $1/event — use sparingly.
 
 async function scrapeMetaAdsViaApify(
   businessName: string,
@@ -203,11 +285,15 @@ export async function scrapeMetaAdLibrary(
 ): Promise<AdCreative[]> {
   const country = countries?.[0] ?? 'US';
 
-  // Primary: Apify (works on Render + local)
+  // Primary: SearchAPI meta_ad_library engine (works on Render — no IP blocking)
+  const searchApiAds = await scrapeMetaAdsViaSearchApi(businessName, country);
+  if (searchApiAds.length > 0) return searchApiAds;
+
+  // Secondary: Apify (fallback if SearchAPI keys exhausted — has per-event cost)
   const apifyAds = await scrapeMetaAdsViaApify(businessName, country);
   if (apifyAds.length > 0) return apifyAds;
 
-  // Fallback: browser scraping (works locally, blocked on Render datacenter IPs)
+  // Last resort: browser scraping (works locally, blocked on Render datacenter IPs)
   // Hard 45s timeout prevents this from hanging the entire research pipeline.
   const browserResult = await Promise.race([
     scrapeMetaAdsViaBrowser(businessName, country, options),

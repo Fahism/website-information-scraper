@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { getPage } from '@/lib/browser-pool';
 import { rateLimitedRequest } from '@/lib/rate-limiter';
+import { getNextAvailableKey, markKeyExhausted } from '@/lib/searchapi-key-manager';
 import type { SocialProfile, ScraperOptions } from '@/scrapers/types';
 
 function parseCount(str: string): number | null {
@@ -15,6 +16,43 @@ function parseCount(str: string): number | null {
   return Math.round(num);
 }
 
+// SearchAPI Google: works from any IP including Render datacenter
+async function scrapeViaSearchApi(
+  handle: string
+): Promise<{ followers: number | null; bio: string | null }> {
+  const apiKey = getNextAvailableKey();
+  if (!apiKey) return { followers: null, bio: null };
+
+  try {
+    const resp = await axios.get('https://www.searchapi.io/api/v1/search', {
+      params: { engine: 'google', q: `site:x.com/${handle} OR site:twitter.com/${handle}`, api_key: apiKey },
+      timeout: 15000,
+    });
+
+    const results: Array<Record<string, unknown>> = resp.data?.organic_results ?? [];
+    const match = results.find(r => {
+      const link = String(r.link ?? '');
+      return (link.includes(`twitter.com/${handle}`) || link.includes(`x.com/${handle}`)) &&
+             !link.includes('/status/');
+    }) ?? results[0];
+
+    if (!match) return { followers: null, bio: null };
+
+    const snippet = String(match.snippet ?? '');
+    // Twitter snippet format sometimes includes follower count
+    const followersMatch = snippet.match(/([\d,.KkMm]+)\s+Followers/i);
+    const followers = followersMatch ? parseCount(followersMatch[1]) : null;
+
+    return { followers, bio: null };
+  } catch (err) {
+    if (axios.isAxiosError(err)) {
+      const status = err.response?.status;
+      if (status === 429 || status === 402) markKeyExhausted(apiKey);
+    }
+    return { followers: null, bio: null };
+  }
+}
+
 export async function scrapeTwitter(
   profileUrl: string,
   options?: ScraperOptions
@@ -24,7 +62,7 @@ export async function scrapeTwitter(
 
   if (!handle) return null;
 
-  // Confirm profile exists via oEmbed
+  // Confirm profile exists via oEmbed (works from any IP)
   try {
     const oEmbedUrl = `https://publish.twitter.com/oembed?url=${encodeURIComponent(`https://twitter.com/${handle}`)}`;
     await rateLimitedRequest('twitter.com', () =>
@@ -34,36 +72,44 @@ export async function scrapeTwitter(
     return null;
   }
 
-  // Try to get follower count from x.com profile page
+  // Primary: SearchAPI Google search for follower count (works on Render)
+  const searchResult = await scrapeViaSearchApi(handle);
+  if (searchResult.followers !== null) {
+    return {
+      platform: 'twitter',
+      url: profileUrl,
+      handle,
+      followers: searchResult.followers,
+      following: null,
+      posts: null,
+      verified: false,
+      bio: null,
+      email: null,
+      phone: null,
+      engagementRate: null,
+      recentPosts: [],
+    };
+  }
+
+  // Fallback: Playwright + Nitter (works locally; Playwright blocked on Render)
   let followers: number | null = null;
   const { page, close } = await getPage({ timeout: options?.timeout ?? 30000 });
   try {
     await rateLimitedRequest('x.com', () =>
       page.goto(`https://x.com/${handle}`, { waitUntil: 'domcontentloaded', timeout: options?.timeout ?? 30000 })
     );
-
     await page.waitForTimeout(2000);
 
-    // Multiple selector fallbacks
     const followerSelectors = [
       '[data-testid="UserProfileHeader_Items"] a[href*="followers"]',
       'a[href$="/followers"] span',
       `a[href="/${handle}/followers"] span`,
     ];
-
     for (const sel of followerSelectors) {
-      try {
-        const text = await page.$eval(sel, el => el.textContent?.trim() ?? '').catch(() => '');
-        if (text) {
-          followers = parseCount(text);
-          if (followers) break;
-        }
-      } catch {
-        // try next selector
-      }
+      const text = await page.$eval(sel, el => el.textContent?.trim() ?? '').catch(() => '');
+      if (text) { followers = parseCount(text); if (followers) break; }
     }
 
-    // Nitter fallback if still no followers
     if (!followers) {
       try {
         const nitterHtml = await rateLimitedRequest('twitter.com', () =>
@@ -79,7 +125,7 @@ export async function scrapeTwitter(
       }
     }
   } catch {
-    // page load failed — still return profile
+    // page load failed
   } finally {
     await close();
   }

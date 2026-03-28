@@ -1,6 +1,5 @@
 import axios from 'axios';
-import * as cheerio from 'cheerio';
-import { rateLimitedRequest } from '@/lib/rate-limiter';
+import { getNextAvailableKey, markKeyExhausted } from '@/lib/searchapi-key-manager';
 import type { SocialProfile, ScraperOptions } from '@/scrapers/types';
 
 function parseCount(str: string): number | null {
@@ -16,7 +15,7 @@ function parseCount(str: string): number | null {
 }
 
 // Never automate LinkedIn login per CLAUDE.md rules
-// Use Google Knowledge Panel to get follower count
+// Use SearchAPI Google to get follower count from knowledge panel snippet
 export async function scrapeLinkedIn(
   profileUrl: string,
   options?: ScraperOptions
@@ -28,28 +27,41 @@ export async function scrapeLinkedIn(
   let bio: string | null = null;
 
   if (handle) {
-    try {
-      const query = `site:linkedin.com/company/${handle} followers`;
-      const googleUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
-
-      const html = await rateLimitedRequest('google.com', () =>
-        axios.get(googleUrl, {
-          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36' },
+    const apiKey = getNextAvailableKey();
+    if (apiKey) {
+      try {
+        const resp = await axios.get('https://www.searchapi.io/api/v1/search', {
+          params: {
+            engine: 'google',
+            q: `${handle.replace(/-/g, ' ')} linkedin followers`,
+            api_key: apiKey,
+          },
           timeout: options?.timeout ?? 15000,
-        }).then(r => r.data as string)
-      );
+        });
 
-      const $ = cheerio.load(html);
-      const pageText = $('body').text();
+        const results: Array<Record<string, unknown>> = resp.data?.organic_results ?? [];
+        // Find a result whose link contains the LinkedIn company page
+        const match = results.find(r => {
+          const link = String(r.link ?? '');
+          return link.includes('linkedin.com/company/');
+        }) ?? results[0];
 
-      const followersMatch = pageText.match(/([\d,KkMm.]+)\s+followers/i);
-      if (followersMatch) followers = parseCount(followersMatch[1]);
+        if (match) {
+          const snippet = String(match.snippet ?? '');
+          // Snippet format: "Company Name. Industry. Location X followers. Description"
+          const followersMatch = snippet.match(/([\d,KkMm.]+)\s+followers/i);
+          if (followersMatch) followers = parseCount(followersMatch[1]);
 
-      // Try to grab description from knowledge panel
-      const descEl = $('[data-attrid="description"] span, .kno-rdesc span').first();
-      if (descEl.length) bio = descEl.text().trim() || null;
-    } catch {
-      // Google search failed — return URL-only profile
+          // Bio is everything after the followers line
+          const afterFollowers = snippet.replace(/.*\d[\d,.]*[KkMm]?\s+followers\.\s*/i, '').trim();
+          if (afterFollowers.length > 10) bio = afterFollowers.slice(0, 300);
+        }
+      } catch (err) {
+        if (axios.isAxiosError(err)) {
+          const status = err.response?.status;
+          if (status === 429 || status === 402) markKeyExhausted(apiKey);
+        }
+      }
     }
   }
 

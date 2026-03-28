@@ -2,6 +2,7 @@ import axios from 'axios';
 import * as cheerio from 'cheerio';
 import { rateLimitedRequest } from '@/lib/rate-limiter';
 import { getPage } from '@/lib/browser-pool';
+import { getNextAvailableKey, markKeyExhausted } from '@/lib/searchapi-key-manager';
 import type { SocialProfile, ScraperOptions } from '@/scrapers/types';
 
 function extractHandle(url: string): string | null {
@@ -21,6 +22,48 @@ function parseCount(str: string): number | null {
   return Math.round(num);
 }
 
+// SearchAPI Google: works from any IP including Render datacenter
+async function scrapeViaSearchApi(
+  profileUrl: string,
+  handle: string
+): Promise<{ followers: number | null; bio: string | null }> {
+  const apiKey = getNextAvailableKey();
+  if (!apiKey) return { followers: null, bio: null };
+
+  try {
+    const resp = await axios.get('https://www.searchapi.io/api/v1/search', {
+      params: { engine: 'google', q: `site:instagram.com/${handle}`, api_key: apiKey },
+      timeout: 15000,
+    });
+
+    const results: Array<Record<string, unknown>> = resp.data?.organic_results ?? [];
+    // Find the result whose link matches the profile
+    const match = results.find(r => {
+      const link = String(r.link ?? '');
+      return link.includes(`instagram.com/${handle}`);
+    }) ?? results[0];
+
+    if (!match) return { followers: null, bio: null };
+
+    const snippet = String(match.snippet ?? '');
+    // Snippet format: "338 Followers, 0 Following, 6 Posts - Name (@handle) on Instagram: "bio""
+    const followersMatch = snippet.match(/([\d,KkMm.]+)\s+Followers/i);
+    const followers = followersMatch ? parseCount(followersMatch[1]) : null;
+
+    // Bio is usually after the dash: "- Name (@handle) on Instagram: "bio text""
+    const bioMatch = snippet.match(/on Instagram:\s*["""]?([^"""]+)/i);
+    const bio = bioMatch ? bioMatch[1].trim() : (snippet || null);
+
+    return { followers, bio };
+  } catch (err) {
+    if (axios.isAxiosError(err)) {
+      const status = err.response?.status;
+      if (status === 429 || status === 402) markKeyExhausted(apiKey);
+    }
+    return { followers: null, bio: null };
+  }
+}
+
 export async function scrapeInstagram(
   profileUrl: string,
   options?: ScraperOptions
@@ -28,7 +71,26 @@ export async function scrapeInstagram(
   const handle = extractHandle(profileUrl);
   if (!handle) return null;
 
-  // Try JSON endpoint first
+  // Primary: SearchAPI Google search (works on Render datacenter IPs)
+  const searchResult = await scrapeViaSearchApi(profileUrl, handle);
+  if (searchResult.followers !== null) {
+    return {
+      platform: 'instagram',
+      url: profileUrl,
+      handle,
+      followers: searchResult.followers,
+      following: null,
+      posts: null,
+      verified: false,
+      bio: searchResult.bio,
+      email: null,
+      phone: null,
+      engagementRate: null,
+      recentPosts: [],
+    };
+  }
+
+  // Secondary: Instagram JSON endpoint (may work on fresh IPs)
   try {
     const apiUrl = `https://www.instagram.com/${handle}/?__a=1&__d=dis`;
     const data = await rateLimitedRequest('instagram.com', () =>
@@ -65,10 +127,10 @@ export async function scrapeInstagram(
     // Fall through to Playwright
   }
 
-  // Playwright fallback
+  // Last resort: Playwright (works on localhost, blocked on Render)
   const { page, close } = await getPage({ timeout: options?.timeout ?? 30000 });
   try {
-    await rateLimitedRequest('instagram.com', () => page.goto(profileUrl, { waitUntil: 'networkidle', timeout: options?.timeout ?? 30000 }));
+    await rateLimitedRequest('instagram.com', () => page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: options?.timeout ?? 30000 }));
     const content = await page.content();
     const $ = cheerio.load(content);
 

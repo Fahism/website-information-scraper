@@ -1,7 +1,5 @@
-import axios from 'axios';
 import { getPage } from '@/lib/browser-pool';
 import { rateLimitedRequest } from '@/lib/rate-limiter';
-import { getNextAvailableKey, markKeyExhausted } from '@/lib/searchapi-key-manager';
 import type { AdCreative, ScraperOptions } from '@/scrapers/types';
 
 interface RawMetaAd {
@@ -81,84 +79,12 @@ function extractAdsFromDOM(): RawMetaAd[] {
   return results.slice(0, 25);
 }
 
-async function scrapeMetaAdsViaSearchAPI(
-  businessName: string,
-  country: string
-): Promise<AdCreative[]> {
-  const apiKey = getNextAvailableKey();
-  if (!apiKey) return [];
-
-  try {
-    const resp = await axios.get('https://www.searchapi.io/api/v1/search', {
-      params: {
-        engine: 'facebook_ads_library',
-        q: businessName,
-        country,
-        api_key: apiKey,
-      },
-      timeout: 20000,
-    });
-
-    const ads: unknown[] = resp.data?.ads ?? [];
-    if (!Array.isArray(ads) || ads.length === 0) return [];
-
-    return ads.slice(0, 25).map((ad: unknown): AdCreative => {
-      const a = ad as Record<string, unknown>;
-      const snapshot = a.snapshot as Record<string, unknown> | undefined;
-      const body = snapshot?.body as Record<string, unknown> | undefined;
-      const images = snapshot?.images as Array<Record<string, unknown>> | undefined;
-      const cards = snapshot?.cards as Array<Record<string, unknown>> | undefined;
-
-      const adText = (body?.text as string | null) ?? null;
-      const imageUrl =
-        (images?.[0]?.resized_image_url as string | null) ??
-        (cards?.[0]?.resized_image_url as string | null) ??
-        null;
-      const adId = String(a.id ?? `${Date.now()}_${Math.random()}`);
-      const startDate = (a.start_date as string | null) ?? null;
-      const endDate = (a.end_date as string | null) ?? null;
-      const isActive = !endDate || a.status === 'ACTIVE';
-
-      return {
-        adId: `meta_${adId}`,
-        platform: 'meta',
-        adText: adText?.slice(0, 500) ?? null,
-        imageUrl,
-        ctaText: null,
-        landingUrl: `https://www.facebook.com/ads/library/?id=${adId}`,
-        startDate: startDate ? parseDateStr(startDate) ?? startDate : null,
-        endDate: endDate ? parseDateStr(endDate) ?? endDate : null,
-        isActive,
-        format: imageUrl ? 'image' : 'text',
-        impressionsRange: null,
-        spendRange: null,
-        reachRange: null,
-        platforms: ['facebook'],
-        ageGenderDistribution: null,
-        regionDistribution: null,
-      };
-    });
-  } catch (err) {
-    if (axios.isAxiosError(err)) {
-      const status = err.response?.status;
-      if (status === 429 || status === 402) markKeyExhausted(apiKey);
-    }
-    return [];
-  }
-}
-
 export async function scrapeMetaAdLibrary(
   businessName: string,
   options?: ScraperOptions,
   countries?: string[]
 ): Promise<AdCreative[]> {
   const country = countries?.[0] ?? 'US';
-
-  // Primary: SearchAPI — works from any IP including Render's datacenter
-  const searchApiAds = await scrapeMetaAdsViaSearchAPI(businessName, country);
-  if (searchApiAds.length > 0) return searchApiAds;
-
-  // Fallback: browser scraping (works on local dev, may be blocked on datacenter IPs)
   const url = `https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=${country}&q=${encodeURIComponent(businessName)}&search_type=keyword_unordered`;
 
   const { page, close } = await getPage({ timeout: options?.timeout ?? 35000 });
@@ -183,8 +109,12 @@ export async function scrapeMetaAdLibrary(
       } catch {}
     }
 
-    // Wait for ad cards to render
-    await page.waitForTimeout(8000);
+    // Wait for initial render, then scroll to trigger lazy-loaded ads
+    await page.waitForTimeout(5000);
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight / 2));
+    await page.waitForTimeout(2000);
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await page.waitForTimeout(2000);
 
     const rawAds = await page.evaluate(extractAdsFromDOM);
 

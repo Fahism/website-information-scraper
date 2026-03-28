@@ -58,7 +58,9 @@ export function extractPhone(text: string, html?: string): string | null {
   }
 
   // Priority 2: International format with + country code
-  const intlPattern = /\+\d{1,3}[-.\s]?\(?\d{1,5}\)?[-.\s]?\d{3,8}[-.\s]?\d{0,8}/g;
+  // Uses [\s.\-–]* (zero or more separator chars) so formats like "+1 747 223 - 8843"
+  // (space-dash-space between groups) are captured in full rather than truncated.
+  const intlPattern = /\+\d{1,3}[\s.\-–]*\(?\d{1,5}\)?[\s.\-–]*\d{3,8}[\s.\-–]+\d{4,8}/g;
   const intlMatches = text.match(intlPattern);
   if (intlMatches) {
     const best = intlMatches.sort((a, b) => b.length - a.length)[0];
@@ -99,15 +101,47 @@ export function extractEmail(text: string, html?: string): string | null {
       const email = m[1].toLowerCase();
       if (!isPlaceholderEmail(email)) return email;
     }
+
+    // Priority 2b: Email at end of a text node, right before a closing tag.
+    // Catches patterns like "<li>Email: contact@x.com</li>" where a prefix
+    // ("Email: ") prevents the sole-content pattern above from matching.
+    // Strip <script> blocks first so emails embedded in JS bundles/config
+    // (internal/dev addresses) are not mistaken for customer-facing contact emails.
+    const htmlNoScript = html.replace(/<script[\s\S]*?<\/script>/gi, '');
+    for (const m of htmlNoScript.matchAll(/([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})(?=\s*<)/g)) {
+      const candidate = m[1].toLowerCase();
+      const tld = candidate.split('.').pop() ?? '';
+      if (isConcatenatedTld(tld)) continue;
+      if (!isPlaceholderEmail(candidate)) return candidate;
+    }
   }
 
   // Priority 3: Regex from body text (last resort)
+  // Guard against TLD concatenation: Cheerio's .text() can merge adjacent inline
+  // elements without whitespace, producing "contact@x.comAddress" where "comAddress"
+  // is parsed as one TLD. We reject any TLD that starts with a known short TLD and
+  // then continues with more letters — that's always a concatenation artifact.
   for (const m of text.matchAll(/\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b/g)) {
     const email = m[0].toLowerCase();
+    const tld = email.split('.').pop() ?? '';
+    if (isConcatenatedTld(tld)) continue;
     if (!isPlaceholderEmail(email)) return email;
   }
 
   return null;
+}
+
+/**
+ * Detect TLDs that are actually two words run together due to DOM text concatenation.
+ * e.g. "comaddress" = ".com" + "address", "comContact" = ".com" + "Contact"
+ * Real TLDs never start with a common short TLD followed by more letters.
+ */
+function isConcatenatedTld(tld: string): boolean {
+  const SHORT_TLDS = ['com', 'org', 'net', 'co', 'io', 'uk', 'us', 'ca', 'au', 'de', 'fr', 'eu', 'in'];
+  for (const base of SHORT_TLDS) {
+    if (tld.startsWith(base) && tld.length > base.length) return true;
+  }
+  return false;
 }
 
 // ─── Address extraction ────────────────────────────────────────────────────────

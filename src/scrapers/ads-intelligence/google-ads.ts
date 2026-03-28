@@ -71,41 +71,68 @@ export async function scrapeGoogleAds(
   options?: ScraperOptions,
   domain?: string
 ): Promise<AdCreative[]> {
-  // Try each available key in order, rotating on quota errors
-  for (let attempt = 0; attempt < 5; attempt++) {
+  // Helper: dedup + domain-filter a raw ad list, return up to 5
+  function processAds(ads: SearchApiAd[], targetDomain?: string): AdCreative[] {
+    if (!Array.isArray(ads)) return [];
+    const seen = new Set<string>();
+    const unique = ads.filter(item => {
+      const key = item.id ?? '';
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    // Only keep ads whose target_domain matches the business domain.
+    // This prevents competitor or unrelated-advertiser results from leaking through.
+    const filtered = targetDomain
+      ? unique.filter(item => {
+          const adDomain = (item.target_domain ?? '').toLowerCase().replace(/^www\./, '');
+          const td = targetDomain.toLowerCase().replace(/^www\./, '');
+          return adDomain === td ||
+            adDomain.endsWith(`.${td}`) ||
+            td.endsWith(`.${adDomain}`);
+        })
+      : unique;
+
+    return filtered.slice(0, 5).map(mapSearchApiAd);
+  }
+
+  // Try each available key in order, rotating on quota errors (max 2 attempts)
+  for (let attempt = 0; attempt < 2; attempt++) {
     const apiKey = getNextAvailableKey();
     if (!apiKey) return [];
 
-    const params: Record<string, string> = {
-      engine: 'google_ads_transparency_center',
-      api_key: apiKey,
-    };
-    if (domain) {
-      params.domain = domain;
-    } else {
-      params.q = businessName;
-    }
-
     try {
+      // Stage 1: domain-based search (most precise — finds this advertiser's own ads)
+      if (domain) {
+        const domainResp = await rateLimitedRequest('searchapi.io', () =>
+          axios.get<SearchApiResponse>(SEARCHAPI_BASE, {
+            params: { engine: 'google_ads_transparency_center', api_key: apiKey, domain },
+            timeout: 15000,
+          }).then(r => r.data)
+        );
+        const domainAds = processAds(domainResp.ad_creatives ?? [], domain);
+        if (domainAds.length > 0) return domainAds;
+
+        // Stage 2: name-based fallback when domain search returns nothing
+        // (SearchAPI may not have indexed this domain yet, but name search can still find ads)
+        const nameResp = await rateLimitedRequest('searchapi.io', () =>
+          axios.get<SearchApiResponse>(SEARCHAPI_BASE, {
+            params: { engine: 'google_ads_transparency_center', api_key: apiKey, q: businessName },
+            timeout: 15000,
+          }).then(r => r.data)
+        );
+        return processAds(nameResp.ad_creatives ?? [], domain);
+      }
+
+      // No domain provided — search by name only, no domain filtering
       const response = await rateLimitedRequest('searchapi.io', () =>
         axios.get<SearchApiResponse>(SEARCHAPI_BASE, {
-          params,
-          timeout: options?.timeout ?? 30000,
+          params: { engine: 'google_ads_transparency_center', api_key: apiKey, q: businessName },
+          timeout: 15000,
         }).then(r => r.data)
       );
-
-      const ads = response.ad_creatives ?? [];
-      if (!Array.isArray(ads)) return [];
-
-      const seen = new Set<string>();
-      const unique = ads.filter(item => {
-        const key = item.id ?? '';
-        if (!key || seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-
-      return unique.slice(0, 5).map(mapSearchApiAd);
+      return processAds(response.ad_creatives ?? []);
     } catch (err) {
       if (isQuotaError(err)) {
         markKeyExhausted(apiKey);

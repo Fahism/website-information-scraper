@@ -71,6 +71,16 @@ export default function JobPage() {
             error={jobStatus.error}
           />
         )}
+        {jobStatus?.status === 'failed' && (
+          <div className="text-center">
+            <a
+              href="/"
+              className="inline-block bg-violet-600 hover:bg-violet-500 text-white text-sm font-medium px-5 py-2.5 rounded-lg transition-colors"
+            >
+              + Start New Research
+            </a>
+          </div>
+        )}
         {report && <ReportViewer report={report} />}
         {!jobStatus && (
           <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-8 text-center">

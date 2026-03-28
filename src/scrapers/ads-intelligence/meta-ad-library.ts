@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { getPage } from '@/lib/browser-pool';
 import { rateLimitedRequest } from '@/lib/rate-limiter';
-import { getNextAvailableKey, markKeyExhausted } from '@/lib/searchapi-key-manager';
+import { getNextAvailableKey, markKeyExhausted, getNextAvailableKeyExcluding } from '@/lib/searchapi-key-manager';
 import type { AdCreative, ScraperOptions } from '@/scrapers/types';
 
 interface RawMetaAd {
@@ -22,15 +22,6 @@ function parseDateStr(raw: string | null): string | null {
   return null;
 }
 
-function unixToDateStr(ts: number | null | undefined): string | null {
-  if (!ts || typeof ts !== 'number') return null;
-  try {
-    return new Date(ts * 1000).toISOString().split('T')[0];
-  } catch {
-    return null;
-  }
-}
-
 // ─── Primary: SearchAPI Meta Ad Library ───────────────────────────────────────
 // Works from any IP including Render's datacenter — SearchAPI handles proxies.
 // Uses the existing SEARCHAPI_API_KEY_1/2 keys (same keys used for Google search).
@@ -38,10 +29,11 @@ function unixToDateStr(ts: number | null | undefined): string | null {
 
 async function scrapeMetaAdsViaSearchApi(
   businessName: string,
-  country: string
-): Promise<AdCreative[]> {
+  country: string,
+  domain?: string
+): Promise<{ ads: AdCreative[]; facebookPageUrl: string | null }> {
   const apiKey = getNextAvailableKey();
-  if (!apiKey) return [];
+  if (!apiKey) return { ads: [], facebookPageUrl: null };
 
   try {
     const resp = await axios.get('https://www.searchapi.io/api/v1/search', {
@@ -49,21 +41,44 @@ async function scrapeMetaAdsViaSearchApi(
         engine: 'meta_ad_library',
         q: businessName,
         country,
+        search_type: 'keyword_unordered',
         api_key: apiKey,
       },
       timeout: 20000,
     });
 
     const ads: unknown[] = resp.data?.ads ?? [];
-    if (!Array.isArray(ads) || ads.length === 0) return [];
+    if (!Array.isArray(ads) || ads.length === 0) return { ads: [], facebookPageUrl: null };
 
-    return ads
+    // Build a lookup: adArchiveId → page_id, so we can get the correct Facebook page
+    // URL from whichever ad survives filtering (not blindly from ads[0]).
+    const pageIdByArchiveId = new Map<string, string>();
+    for (const item of ads) {
+      const ad = item as Record<string, unknown>;
+      const archiveId = String(ad.ad_archive_id ?? '');
+      const pageId = String(ad.page_id ?? '');
+      if (archiveId && pageId) pageIdByArchiveId.set(archiveId, pageId);
+    }
+
+    // Helper: pick the Facebook page URL from the first ad in a filtered set
+    function facebookPageUrlFromAds(filtered: AdCreative[]): string | null {
+      for (const ad of filtered) {
+        const archiveId = ad.adId.replace('meta_', '');
+        const pageId = pageIdByArchiveId.get(archiveId);
+        if (pageId) return `https://www.facebook.com/${pageId}`;
+      }
+      return null;
+    }
+
+    const mapped = ads
       .map((item: unknown): AdCreative | null => {
         const ad = item as Record<string, unknown>;
         const snapshot = ad.snapshot as Record<string, unknown> | undefined;
         const body = snapshot?.body as Record<string, unknown> | undefined;
         const images = snapshot?.images as Array<Record<string, unknown>> | undefined;
         const videos = snapshot?.videos as Array<Record<string, unknown>> | undefined;
+        // Carousel ads store images inside snapshot.cards[] rather than snapshot.images[]
+        const cards = snapshot?.cards as Array<Record<string, unknown>> | undefined;
 
         const rawId = String(ad.ad_archive_id ?? '');
         if (!rawId) return null;
@@ -71,7 +86,10 @@ async function scrapeMetaAdsViaSearchApi(
         const adText = (body?.text as string | null)?.slice(0, 500) ?? null;
         const imageUrl =
           (images?.[0]?.original_image_url as string | null) ??
+          (images?.[0]?.resized_image_url as string | null) ??
           (videos?.[0]?.video_preview_image_url as string | null) ??
+          (cards?.[0]?.original_image_url as string | null) ??
+          (cards?.[0]?.resized_image_url as string | null) ??
           null;
         const isActive = Boolean(ad.is_active);
         const startDate = parseDateStr(ad.start_date as string | null);
@@ -103,129 +121,63 @@ async function scrapeMetaAdsViaSearchApi(
         };
       })
       .filter((ad): ad is AdCreative => ad !== null);
+
+    // When multiple companies share the same business name, SearchAPI returns ads from all of
+    // them. Filter progressively — always prefer the most precise match:
+    //
+    // 1. Domain slug match (only if slug is ≥5 chars — short slugs like "abc" cause false
+    //    positives because they appear as substrings in unrelated URLs and ad copy)
+    // 2. Significant business-name words (≥6 chars, ALL must match — prevents generic words
+    //    like "digital" or "health" from matching unrelated advertisers)
+    // 3. Return empty — never return unrelated ads
+    if (domain) {
+      const domainSlug = domain.replace(/^www\./, '').split('.')[0].toLowerCase();
+
+      if (domainSlug.length >= 5) {
+        const domainMatched = mapped.filter(ad =>
+          ad.landingUrl?.toLowerCase().includes(domainSlug) ||
+          ad.adText?.toLowerCase().includes(domainSlug)
+        );
+        if (domainMatched.length > 0) {
+          return { ads: domainMatched, facebookPageUrl: facebookPageUrlFromAds(domainMatched) };
+        }
+      }
+
+      // Significant words fallback — words must be ≥6 chars and ALL must appear in the ad
+      const significantWords = businessName
+        .toLowerCase()
+        .split(/\s+/)
+        .filter(w => w.length >= 6);
+      if (significantWords.length >= 1) {
+        const nameMatched = mapped.filter(ad =>
+          significantWords.every(word =>
+            ad.landingUrl?.toLowerCase().includes(word) ||
+            ad.adText?.toLowerCase().includes(word)
+          )
+        );
+        if (nameMatched.length > 0) {
+          return { ads: nameMatched, facebookPageUrl: facebookPageUrlFromAds(nameMatched) };
+        }
+      }
+
+      // Nothing matched — return page URL only (business runs ads but none link to their domain)
+      return { ads: [], facebookPageUrl: facebookPageUrlFromAds(mapped) };
+    }
+
+    return { ads: mapped, facebookPageUrl: facebookPageUrlFromAds(mapped) };
   } catch (err) {
     if (axios.isAxiosError(err)) {
       const status = err.response?.status;
-      if (status === 429 || status === 402) markKeyExhausted(apiKey);
-    }
-    return [];
-  }
-}
-
-// ─── Secondary: Apify Facebook Ads Scraper ────────────────────────────────────
-// Fallback if SearchAPI keys are exhausted. Requires APIFY_API_TOKEN.
-// NOTE: apify~facebook-ads-scraper charges $1/event — use sparingly.
-
-async function scrapeMetaAdsViaApify(
-  businessName: string,
-  country: string
-): Promise<AdCreative[]> {
-  const token = process.env.APIFY_API_TOKEN;
-  if (!token) return [];
-
-  const searchUrl = `https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=${country}&q=${encodeURIComponent(businessName)}&search_type=keyword_unordered`;
-
-  let runId: string | null = null;
-
-  try {
-    // Start the Apify run (async, not sync — actor needs 60-90s to run)
-    const startResp = await axios.post(
-      `https://api.apify.com/v2/acts/apify~facebook-ads-scraper/runs?token=${token}&memory=1024`,
-      { startUrls: [{ url: searchUrl }], maxItems: 25 },
-      { timeout: 15000 }
-    );
-    runId = startResp.data?.data?.id ?? null;
-    if (!runId) return [];
-
-    // Poll for run completion every 8s, up to 70s total
-    let status = 'RUNNING';
-    const deadline = Date.now() + 70000;
-    while (Date.now() < deadline) {
-      await new Promise(r => setTimeout(r, 8000));
-      const statusResp = await axios.get(
-        `https://api.apify.com/v2/actor-runs/${runId}?token=${token}`,
-        { timeout: 10000 }
-      );
-      status = statusResp.data?.data?.status ?? 'UNKNOWN';
-      if (status === 'SUCCEEDED' || status === 'FAILED' || status === 'TIMED-OUT' || status === 'ABORTED') {
-        break;
+      if (status === 429 || status === 402) {
+        markKeyExhausted(apiKey);
+        // Retry once with the next available key (handles concurrent key exhaustion)
+        const retryKey = getNextAvailableKeyExcluding(apiKey);
+        if (retryKey) {
+          return scrapeMetaAdsViaSearchApi(businessName, country, domain);
+        }
       }
     }
-
-    // Fetch dataset items whether run succeeded or is still running (partial data is fine)
-    const dataResp = await axios.get(
-      `https://api.apify.com/v2/actor-runs/${runId}/dataset/items?token=${token}&limit=25`,
-      { timeout: 15000 }
-    );
-
-    // Abort run if still running — to save Apify credits
-    if (status === 'RUNNING') {
-      axios.post(
-        `https://api.apify.com/v2/actor-runs/${runId}/abort?token=${token}`,
-        {},
-        { timeout: 5000 }
-      ).catch(() => {});
-    }
-
-    const items: unknown[] = dataResp.data ?? [];
-    if (!Array.isArray(items) || items.length === 0) return [];
-
-    return items
-      .map((item: unknown): AdCreative | null => {
-        const ad = item as Record<string, unknown>;
-        const snapshot = ad.snapshot as Record<string, unknown> | undefined;
-        const body = snapshot?.body as Record<string, unknown> | undefined;
-        const images = snapshot?.images as Array<Record<string, unknown>> | undefined;
-        const videos = snapshot?.videos as Array<Record<string, unknown>> | undefined;
-
-        const rawId = String(ad.adArchiveID ?? ad.adArchiveId ?? '');
-        if (!rawId) return null;
-
-        const adText = (body?.text as string | null)?.slice(0, 500) ?? null;
-        const imageUrl =
-          (images?.[0]?.originalImageUrl as string | null) ??
-          (videos?.[0]?.videoPreviewImageUrl as string | null) ??
-          null;
-        const isActive = Boolean(ad.isActive);
-        const startDate = unixToDateStr(ad.startDate as number | null);
-        const endDate = unixToDateStr(ad.endDate as number | null);
-        const platforms = (ad.publisherPlatform as string[] | null)?.map(p => p.toLowerCase()) ?? ['facebook'];
-        const ctaText = (snapshot?.ctaText as string | null) ?? null;
-        const landingUrl = (snapshot?.linkUrl as string | null)
-          ?? `https://www.facebook.com/ads/library/?id=${rawId}`;
-        const displayFormat = (snapshot?.displayFormat as string | null) ?? null;
-        const format = displayFormat === 'VIDEO' ? 'video' : imageUrl ? 'image' : 'text';
-
-        return {
-          adId: `meta_${rawId}`,
-          platform: 'meta',
-          adText,
-          imageUrl,
-          ctaText,
-          landingUrl,
-          startDate,
-          endDate,
-          isActive,
-          format,
-          impressionsRange: null,
-          spendRange: null,
-          reachRange: null,
-          platforms,
-          ageGenderDistribution: null,
-          regionDistribution: null,
-        };
-      })
-      .filter((ad): ad is AdCreative => ad !== null);
-  } catch {
-    // If run was started but we hit an error fetching results, abort it
-    if (runId) {
-      axios.post(
-        `https://api.apify.com/v2/actor-runs/${runId}/abort?token=${process.env.APIFY_API_TOKEN}`,
-        {},
-        { timeout: 5000 }
-      ).catch(() => {});
-    }
-    return [];
+    return { ads: [], facebookPageUrl: null };
   }
 }
 
@@ -281,25 +233,22 @@ function extractAdsFromDOM(): RawMetaAd[] {
 export async function scrapeMetaAdLibrary(
   businessName: string,
   options?: ScraperOptions,
-  countries?: string[]
-): Promise<AdCreative[]> {
+  countries?: string[],
+  domain?: string
+): Promise<{ ads: AdCreative[]; facebookPageUrl: string | null }> {
   const country = countries?.[0] ?? 'US';
 
   // Primary: SearchAPI meta_ad_library engine (works on Render — no IP blocking)
-  const searchApiAds = await scrapeMetaAdsViaSearchApi(businessName, country);
-  if (searchApiAds.length > 0) return searchApiAds;
+  const searchApiResult = await scrapeMetaAdsViaSearchApi(businessName, country, domain);
+  if (searchApiResult.ads.length > 0) return searchApiResult;
 
-  // Secondary: Apify (fallback if SearchAPI keys exhausted — has per-event cost)
-  const apifyAds = await scrapeMetaAdsViaApify(businessName, country);
-  if (apifyAds.length > 0) return apifyAds;
-
-  // Last resort: browser scraping (works locally, blocked on Render datacenter IPs)
+  // Fallback: browser scraping (works locally, blocked on Render datacenter IPs)
   // Hard 45s timeout prevents this from hanging the entire research pipeline.
-  const browserResult = await Promise.race([
+  const browserAds = await Promise.race([
     scrapeMetaAdsViaBrowser(businessName, country, options),
     new Promise<AdCreative[]>(resolve => setTimeout(() => resolve([]), 45000)),
   ]);
-  return browserResult;
+  return { ads: browserAds, facebookPageUrl: searchApiResult.facebookPageUrl };
 }
 
 async function scrapeMetaAdsViaBrowser(

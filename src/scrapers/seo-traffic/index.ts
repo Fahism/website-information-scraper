@@ -9,20 +9,17 @@ const COMMON_BLOG_PATHS = ['/blog', '/news', '/articles', '/resources', '/insigh
 
 async function checkBlogPathsDirect(baseUrl: string, timeout: number): Promise<{ hasBlog: boolean; blogUrl: string | null }> {
   const origin = new URL(baseUrl).origin;
-  for (const path of COMMON_BLOG_PATHS) {
-    try {
+  const results = await Promise.allSettled(
+    COMMON_BLOG_PATHS.map(async path => {
       const fullUrl = origin + path;
-      const resp = await axios.head(fullUrl, {
-        timeout,
-        maxRedirects: 3,
-        validateStatus: s => s < 400,
-      });
-      if (resp.status < 400) {
-        return { hasBlog: true, blogUrl: fullUrl };
-      }
-    } catch {
-      // path doesn't exist
-    }
+      const resp = await axios.head(fullUrl, { timeout, maxRedirects: 3, validateStatus: s => s < 400 });
+      if (resp.status >= 400) throw new Error('not found');
+      return fullUrl;
+    })
+  );
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i];
+    if (r.status === 'fulfilled') return { hasBlog: true, blogUrl: r.value };
   }
   return { hasBlog: false, blogUrl: null };
 }

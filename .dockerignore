@@ -6,7 +6,10 @@ node_modules
 *.log
 .DS_Store
 .git
+.github
 scripts
 supabase
 tsconfig.tsbuildinfo
 rendercred.txt
+test-ads.ts
+*.md

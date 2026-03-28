@@ -139,6 +139,31 @@ export async function runOrchestrator(
   ];
 
   await Promise.all(tasks);
+
+  // Fallback: if social media found no Facebook profile but Meta ads exist, seed a stub
+  // using the Facebook page URL extracted from the ad data (all ads belong to a page)
+  const _sm = socialMedia as SocialMediaResult | null;
+  const _ai = adsIntelligence as AdsIntelligenceResult | null;
+  if (_sm && _ai?.facebookPageUrl) {
+    const hasFacebook = _sm.profiles.some(p => p.platform === 'facebook');
+    if (!hasFacebook) {
+      _sm.profiles.unshift({
+        platform: 'facebook',
+        url: _ai.facebookPageUrl,
+        handle: null,
+        followers: null,
+        following: null,
+        posts: null,
+        verified: false,
+        bio: null,
+        email: null,
+        phone: null,
+        engagementRate: null,
+        recentPosts: [],
+      });
+    }
+  }
+
   await update(90, 'Generating AI analysis');
 
   // Default empty results if scraper failed
@@ -153,7 +178,7 @@ export async function runOrchestrator(
     businessInfo: businessInfo ?? { businessName: null, phone: null, email: null, address: null, city: null, state: null, zip: null, hasContactForm: false, hasBookingSystem: false, bookingPlatform: null, googleMapsUrl: null, description: null, industry: null, googleRating: null, reviewCount: null, businessHours: null, ...emptyErrors },
     socialMedia: socialMedia ?? { profiles: [], ...emptyErrors },
     techStack: techStack ?? { technologies: [], hasWordpress: false, hasShopify: false, hasWebflow: false, hasCRM: false, crmName: null, hasEmailTool: false, emailToolName: null, hasPixel: false, pixelTypes: [], ...emptyErrors },
-    adsIntelligence: adsIntelligence ?? { metaAds: [], tiktokAds: [], googleAds: [], totalActiveAds: 0, oldestAdStartDate: null, ...emptyErrors },
+    adsIntelligence: adsIntelligence ?? { metaAds: [], tiktokAds: [], googleAds: [], totalActiveAds: 0, oldestAdStartDate: null, facebookPageUrl: null, ...emptyErrors },
     adMetrics: adMetrics ?? { metrics: [], summary: { provenAdCount: 0, avgLongevityDays: 0, topPlatform: null }, ...emptyErrors },
     funnelData: funnelData ?? { funnelScore: 0, elements: [], crawledPages: 0, hasLandingPage: false, hasLeadMagnet: false, hasEmailCapture: false, hasBooking: false, ...emptyErrors },
     seoTraffic: seoTraffic ?? { indexedPageCount: null, hasBlog: false, blogUrl: null, metaTitle: null, metaDescription: null, h1: null, topKeywords: [], isRunningPaidSearch: false, responseTimeMs: null, hasSSL: false, ...emptyErrors },

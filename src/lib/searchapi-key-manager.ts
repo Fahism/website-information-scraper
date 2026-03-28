@@ -55,3 +55,19 @@ export function markKeyExhausted(key: string): void {
     state.exhaustedAt = Date.now();
   }
 }
+
+/**
+ * Returns the next non-exhausted key that is different from the given key.
+ * Use this to retry after a 429/402 without re-trying the exhausted key.
+ */
+export function getNextAvailableKeyExcluding(exhaustedKey: string): string | null {
+  const now = Date.now();
+  for (const state of keyStates) {
+    if (state.key === exhaustedKey) continue;
+    if (state.exhaustedAt !== null && now - state.exhaustedAt > RESET_AFTER_MS) {
+      state.exhaustedAt = null;
+    }
+    if (state.exhaustedAt === null) return state.key;
+  }
+  return null;
+}

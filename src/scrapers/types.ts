@@ -118,6 +118,7 @@ export interface AdsIntelligenceResult {
   googleAds: AdCreative[];
   totalActiveAds: number;
   oldestAdStartDate: string | null;
+  facebookPageUrl: string | null; // extracted from Meta ad page_id — used as social media fallback
   errors:    ScraperError[];
 }
 

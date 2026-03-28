@@ -81,7 +81,7 @@ export const TECH_PATTERNS: TechPattern[] = [
   { name: 'WooCommerce', category: 'ecommerce', pattern: /woocommerce/i },
   { name: 'Stripe', category: 'ecommerce', pattern: /js\.stripe\.com/i },
   { name: 'BigCommerce', category: 'ecommerce', pattern: /bigcommerce\.com|cdn\.bigcommerce/i },
-  { name: 'Magento', category: 'ecommerce', pattern: /mage\/|magento|Magento_/i },
+  { name: 'Magento', category: 'ecommerce', pattern: /Magento_[A-Z]|\/pub\/static\/frontend\/Magento|mage\/cookies\.js|RequireJS_Magento/i },
   { name: 'Shift4Shop', category: 'ecommerce', pattern: /3dcart\.com|shift4shop\.com/i },
   { name: 'Ecwid', category: 'ecommerce', pattern: /ecwid\.com|app\.ecwid/i },
   { name: 'Square Online', category: 'ecommerce', pattern: /squareonline\.com|square\.site/i },

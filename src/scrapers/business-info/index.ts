@@ -22,20 +22,37 @@ function detectBooking(html: string): { hasBooking: boolean; platform: string | 
 
 function detectIndustry(text: string): string | null {
   const industries: Record<string, string[]> = {
-    'home_services': ['roofing', 'plumbing', 'hvac', 'electrician', 'cleaning', 'landscaping', 'painting', 'contractor'],
-    'legal': ['attorney', 'lawyer', 'law firm', 'legal'],
-    'medical': ['clinic', 'doctor', 'dental', 'medical', 'health', 'therapy', 'chiropractic'],
-    'retail': ['shop', 'store', 'boutique', 'buy', 'product'],
-    'restaurant': ['restaurant', 'cafe', 'menu', 'food', 'dining'],
-    'fitness': ['gym', 'fitness', 'workout', 'personal trainer', 'yoga', 'pilates'],
-    'salon': ['salon', 'spa', 'beauty', 'hair', 'nail'],
-    'real_estate': ['real estate', 'realtor', 'property', 'homes for sale'],
+    // Specific industries first — scored by keyword hit count so order doesn't bias results
+    'financial_services': ['financial planning', 'financial advisor', 'financial consultant', 'financial services', 'loan', 'mortgage', 'insurance', 'investment', 'debt relief', 'solar loan', 'wealth management', 'credit repair', 'refinance', 'lender', 'banking'],
+    'solar': ['solar panel', 'solar energy', 'solar loan', 'solar payment', 'solar system', 'solar relief', 'solar bill'],
+    'home_services': ['roofing', 'plumbing', 'hvac', 'electrician', 'cleaning service', 'landscaping', 'painting contractor', 'general contractor'],
+    'legal': ['attorney', 'lawyer', 'law firm', 'legal services', 'litigation'],
+    'medical': ['clinic', 'doctor', 'dental', 'medical center', 'therapy', 'chiropractic', 'healthcare'],
+    'real_estate': ['real estate', 'realtor', 'property management', 'homes for sale', 'mls listing'],
+    'fitness': ['gym', 'fitness center', 'personal trainer', 'yoga studio', 'pilates'],
+    'salon': ['hair salon', 'nail salon', 'day spa', 'beauty salon'],
+    // "restaurant" uses only unambiguous terms — "menu" and "food" removed (too generic)
+    'restaurant': ['restaurant', 'cafe', 'dining room', 'dine in', 'takeout', 'cuisine', 'eatery', 'bistro'],
+    'retail': ['online store', 'add to cart', 'shop now', 'boutique'],
   };
+
   const lower = text.toLowerCase();
+
+  // Score every industry by how many of its keywords appear in the text.
+  // The one with the highest count wins — prevents a single generic word
+  // (like "menu" or "health") from misclassifying the business.
+  let bestIndustry: string | null = null;
+  let bestScore = 0;
+
   for (const [industry, keywords] of Object.entries(industries)) {
-    if (keywords.some(kw => lower.includes(kw))) return industry;
+    const score = keywords.filter(kw => lower.includes(kw)).length;
+    if (score > bestScore) {
+      bestScore = score;
+      bestIndustry = industry;
+    }
   }
-  return null;
+
+  return bestIndustry;
 }
 
 interface SchemaOrgData {

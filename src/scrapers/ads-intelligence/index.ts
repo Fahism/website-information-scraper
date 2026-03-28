@@ -91,12 +91,13 @@ export async function scrapeAdsIntelligence(
   const domain = new URL(websiteUrl).hostname.replace(/^www\./, '');
 
   const [metaResult, tiktokResult, googleResult] = await Promise.allSettled([
-    scrapeMetaAdLibrary(businessName, options, metaCountries),
+    scrapeMetaAdLibrary(businessName, options, metaCountries, domain),
     scrapeTikTokAds(businessName, options, domain),
     scrapeGoogleAds(businessName, options, domain),
   ]);
 
-  const metaAds = metaResult.status === 'fulfilled' ? metaResult.value : [];
+  const metaAds = metaResult.status === 'fulfilled' ? metaResult.value.ads : [];
+  const facebookPageUrl = metaResult.status === 'fulfilled' ? metaResult.value.facebookPageUrl : null;
   const tiktokAds = tiktokResult.status === 'fulfilled' ? tiktokResult.value : [];
   const googleAds = googleResult.status === 'fulfilled' ? googleResult.value : [];
 
@@ -119,5 +120,5 @@ export async function scrapeAdsIntelligence(
     .sort();
   const oldestAdStartDate = startDates[0] ?? null;
 
-  return { metaAds, tiktokAds, googleAds, totalActiveAds, oldestAdStartDate, errors };
+  return { metaAds, tiktokAds, googleAds, totalActiveAds, oldestAdStartDate, facebookPageUrl, errors };
 }

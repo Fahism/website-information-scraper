@@ -1,6 +1,8 @@
+import axios from 'axios';
 import * as cheerio from 'cheerio';
 import { getPage } from '@/lib/browser-pool';
 import { rateLimitedRequest } from '@/lib/rate-limiter';
+import { getNextAvailableKey, markKeyExhausted } from '@/lib/searchapi-key-manager';
 import { scrapeFacebook } from './facebook';
 import { scrapeInstagram } from './instagram';
 import { scrapeTikTok } from './tiktok';
@@ -48,8 +50,35 @@ async function googleSearchSocialProfiles(
   const platforms = ['facebook.com', 'instagram.com', 'tiktok.com', 'youtube.com', 'linkedin.com/company'];
   const siteQuery = platforms.map(p => `site:${p}`).join(' OR ');
   const query = `"${businessName}" ${siteQuery}`;
-  const googleUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}&num=10`;
 
+  // Use SearchAPI for Google search — works from any IP including Render's datacenter
+  const apiKey = getNextAvailableKey();
+  if (apiKey) {
+    try {
+      const resp = await axios.get('https://www.searchapi.io/api/v1/search', {
+        params: { engine: 'google', q: query, num: 10, api_key: apiKey },
+        timeout: 15000,
+      });
+      const results: Array<Record<string, unknown>> = resp.data?.organic_results ?? [];
+      for (const result of results) {
+        const rawUrl = String(result.link ?? '');
+        for (const [platform, pattern] of Object.entries(SOCIAL_LINK_PATTERNS)) {
+          if (!found[platform] && pattern.test(rawUrl)) {
+            found[platform] = rawUrl.startsWith('http') ? rawUrl : `https://${rawUrl}`;
+          }
+        }
+      }
+      return found;
+    } catch (err) {
+      if (axios.isAxiosError(err)) {
+        const status = err.response?.status;
+        if (status === 429 || status === 402) markKeyExhausted(apiKey);
+      }
+    }
+  }
+
+  // Fallback: direct browser scraping (works locally, blocked on datacenter IPs)
+  const googleUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}&num=10`;
   try {
     const { page, close } = await getPage({ timeout: 15000 });
     try {
@@ -58,14 +87,10 @@ async function googleSearchSocialProfiles(
       );
       const html = await page.content();
       const $ = cheerio.load(html);
-
-      // Extract result URLs from Google
       $('a[href]').each((_, el) => {
         const href = $(el).attr('href') ?? '';
-        // Google wraps results in /url?q= format
         const match = href.match(/\/url\?q=([^&]+)/);
         const rawUrl = match ? decodeURIComponent(match[1]) : href;
-
         for (const [platform, pattern] of Object.entries(SOCIAL_LINK_PATTERNS)) {
           if (!found[platform] && pattern.test(rawUrl)) {
             found[platform] = rawUrl.startsWith('http') ? rawUrl : `https://${rawUrl}`;

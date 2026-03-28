@@ -33,7 +33,7 @@ async function fetchFromApify(profileUrl: string): Promise<FacebookApiResult | n
     const resp = await axios.post(apiUrl, {
       startUrls: [{ url: profileUrl }],
     }, {
-      timeout: 60000, // Apify runs may take up to 60s
+      timeout: 20000, // Apify runs may take up to 60s but we cap at 20s to avoid blocking
       headers: { 'Content-Type': 'application/json' },
     });
 

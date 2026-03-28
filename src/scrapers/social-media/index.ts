@@ -167,7 +167,16 @@ export async function scrapeSocialMedia(
     ['twitter', () => socialLinks.twitter ? scrapeTwitter(socialLinks.twitter, options) : Promise.resolve(null)],
   ];
 
-  const results = await Promise.allSettled(scrapers.map(([, fn]) => fn()));
+  // Wrap each platform scraper with a hard timeout so a hung browser page
+  // cannot block the entire social media scraper indefinitely
+  const scraperTimeout = Math.min(options?.timeout ?? 20000, 20000);
+  const withTimeout = <T>(p: Promise<T>): Promise<T | null> =>
+    Promise.race([
+      p,
+      new Promise<null>(resolve => setTimeout(() => resolve(null), scraperTimeout)),
+    ]);
+
+  const results = await Promise.allSettled(scrapers.map(([, fn]) => withTimeout(fn())));
 
   for (let i = 0; i < results.length; i++) {
     const [platform] = scrapers[i];

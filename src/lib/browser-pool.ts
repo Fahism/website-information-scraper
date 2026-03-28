@@ -32,7 +32,8 @@ export async function getBrowser(): Promise<Browser> {
   if (browserInstance && browserInstance.isConnected()) {
     return browserInstance;
   }
-  browserInstance = await playwrightExtraChromium.launch({
+
+  const launchPromise = playwrightExtraChromium.launch({
     headless: true,
     args: [
       '--no-sandbox',
@@ -41,9 +42,18 @@ export async function getBrowser(): Promise<Browser> {
       '--disable-accelerated-2d-canvas',
       '--no-first-run',
       '--no-zygote',
+      '--single-process',
       '--disable-gpu',
     ],
-  }) as unknown as Browser;
+  });
+
+  // Hard 25s timeout — prevents getBrowser() from hanging forever if the
+  // browser binary fails to start (common on memory-constrained Render free tier)
+  const timeoutPromise = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error('Browser launch timed out after 25s')), 25000)
+  );
+
+  browserInstance = await Promise.race([launchPromise, timeoutPromise]) as unknown as Browser;
   return browserInstance;
 }
 

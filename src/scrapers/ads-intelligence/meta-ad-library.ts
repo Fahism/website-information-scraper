@@ -208,6 +208,19 @@ export async function scrapeMetaAdLibrary(
   if (apifyAds.length > 0) return apifyAds;
 
   // Fallback: browser scraping (works locally, blocked on Render datacenter IPs)
+  // Hard 45s timeout prevents this from hanging the entire research pipeline.
+  const browserResult = await Promise.race([
+    scrapeMetaAdsViaBrowser(businessName, country, options),
+    new Promise<AdCreative[]>(resolve => setTimeout(() => resolve([]), 45000)),
+  ]);
+  return browserResult;
+}
+
+async function scrapeMetaAdsViaBrowser(
+  businessName: string,
+  country: string,
+  options?: ScraperOptions
+): Promise<AdCreative[]> {
   const url = `https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=${country}&q=${encodeURIComponent(businessName)}&search_type=keyword_unordered`;
   const { page, close } = await getPage({ timeout: options?.timeout ?? 35000 });
 
